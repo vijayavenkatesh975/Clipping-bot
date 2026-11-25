@@ -1,0 +1,94 @@
+name: 24/7 Telegram Clipper Bot
+
+on:
+  schedule:
+    # Runs every 5 hours as a reliable heartbeat
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+# Ensure only one instance of the bot runs at any time to prevent Telegram polling conflicts
+concurrency:
+  group: telegram-clipper-bot
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  run-bot:
+    name: Run Telegram Clipper Bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # Max allowed before GitHub timeout
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install System Dependencies (FFmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libgl1
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify Environment & Tests
+        run: |
+          python -m unittest discover -s tests
+
+      - name: Run Bot Daemon (Continuous 24/7 Session)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || '9149514602:AAHWusNo-FkWb4znY7-q0x8quz6SrodDiqU' }}
+          ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS || '1483331491' }}
+          DEFAULT_LAYOUT: 'top'
+          DEFAULT_FIT: 'pad'
+          DEFAULT_LENGTH: '20-45'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=========================================================="
+          echo "⚡ Launching Telegram Clipper Bot on GitHub Actions"
+          echo "=========================================================="
+          
+          # Start bot in background with unbuffered logs
+          python -u bot.py &
+          BOT_PID=$!
+          
+          # Session duration: 5 hours (18000 seconds)
+          SESSION_SECS=18000
+          echo "Bot running with PID $BOT_PID. Active for $SESSION_SECS s (~5 hours)..."
+          
+          ELAPSED=0
+          while [ $ELAPSED -lt $SESSION_SECS ]; do
+            if ! kill -0 $BOT_PID 2>/dev/null; then
+              echo "⚠️ Bot process exited unexpectedly after $ELAPSED seconds."
+              wait $BOT_PID
+              exit 1
+            fi
+            sleep 60
+            ELAPSED=$((ELAPSED + 60))
+          done
+          
+          echo "⏱️ Session limit reached ($SESSION_SECS s). Triggering next 24/7 handover..."
+          
+          # Seamlessly trigger the next workflow dispatch before terminating
+          curl -s -X POST \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/bot.yml/dispatches \
+            -d '{"ref":"main"}' || true
+          
+          echo "🛑 Stopping current bot runner cleanly..."
+          kill -TERM $BOT_PID 2>/dev/null || true
+          wait $BOT_PID 2>/dev/null || true
+          echo "✅ Continuous handover complete."
