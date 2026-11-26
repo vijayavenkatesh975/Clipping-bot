@@ -182,6 +182,26 @@ async def length_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Choose Target Clip Duration (All strictly within 1 min):", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+async def subs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_user_allowed(user_id): return
+    args = context.args
+    settings = get_user_settings(user_id)
+    if args and args[0].lower() in ("on", "true", "enable", "yes"):
+        settings["subs"] = True
+        await update.message.reply_text("✅ Subtitles enabled for commentary clips.")
+    elif args and args[0].lower() in ("off", "false", "disable", "no"):
+        settings["subs"] = False
+        await update.message.reply_text("✅ Subtitles disabled (Clean video).")
+    else:
+        current_status = "Enabled" if settings.get("subs", False) else "Disabled (Default - Clean Video)"
+        keyboard = [
+            [InlineKeyboardButton("🚫 Disable Subtitles (Clean Video)", callback_data="set_subs_off")],
+            [InlineKeyboardButton("📝 Enable Subtitles (Commentary only)", callback_data="set_subs_on")]
+        ]
+        await update.message.reply_text(f"Subtitles are currently: <b>{current_status}</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_user_allowed(user_id): return
@@ -359,6 +379,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("set_fit_"):
         settings["fit"] = data.replace("set_fit_", "")
         await query.edit_message_text(f"✅ Normal video fit set to: <b>{settings['fit']}</b>", parse_mode="HTML")
+        return
+
+    if data == "set_subs_off":
+        settings["subs"] = False
+        await query.edit_message_text("✅ Subtitles <b>Disabled</b> (All clips will be clean video without subtitles).", parse_mode="HTML")
+        return
+
+    if data == "set_subs_on":
+        settings["subs"] = True
+        await query.edit_message_text("✅ Subtitles <b>Enabled</b> (Karaoke subtitles for active commentary clips).", parse_mode="HTML")
         return
 
     if data.startswith("set_len_"):
@@ -660,6 +690,7 @@ def main():
     app.add_handler(CommandHandler("facecam", facecam_command))
     app.add_handler(CommandHandler("fit", fit_command))
     app.add_handler(CommandHandler("length", length_command))
+    app.add_handler(CommandHandler("subs", subs_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
 
