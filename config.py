@@ -54,6 +54,7 @@ DEFAULT_CLIPS = int(os.getenv("DEFAULT_CLIPS", "5"))
 DEFAULT_LAYOUT = os.getenv("DEFAULT_LAYOUT", "top").lower()
 DEFAULT_FIT = os.getenv("DEFAULT_FIT", "pad").lower()
 DEFAULT_LENGTH = os.getenv("DEFAULT_LENGTH", "20-45")
+DEFAULT_SUBS = os.getenv("DEFAULT_SUBS", "false").lower() in ("true", "1", "yes")
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")

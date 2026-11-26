@@ -23,7 +23,7 @@ from telegram.request import HTTPXRequest
 
 from config import (
     TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS, MAX_JOB_MINUTES,
-    DEFAULT_CLIPS, DEFAULT_LAYOUT, DEFAULT_FIT, DEFAULT_LENGTH,
+    DEFAULT_CLIPS, DEFAULT_LAYOUT, DEFAULT_FIT, DEFAULT_LENGTH, DEFAULT_SUBS,
     is_user_allowed, TELEGRAM_API_BASE, WORK_DIR
 )
 from pipeline import probe_video, run_pipeline, re_render_clips
@@ -46,6 +46,7 @@ def get_user_settings(user_id: int):
             "fit": DEFAULT_FIT,
             "length": DEFAULT_LENGTH,
             "clips": DEFAULT_CLIPS,
+            "subs": DEFAULT_SUBS,
             "manual_facecam": None
         }
     return USER_SETTINGS[user_id]
@@ -395,6 +396,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "layout": settings["layout"],
             "fit": settings["fit"],
             "length": settings["length"],
+            "subs": settings.get("subs", DEFAULT_SUBS),
             "manual_facecam": settings.get("manual_facecam"),
             "meta": meta,
             "msg_id": progress_msg.message_id,
@@ -449,6 +451,7 @@ async def job_worker(app: Application):
                     fit=job["fit"],
                     length=job["length"],
                     manual_facecam=job.get("manual_facecam"),
+                    enable_subs=job.get("subs", DEFAULT_SUBS),
                     on_progress=lambda stage, pct, eta: asyncio.run_coroutine_threadsafe(update_ui(stage, pct, eta), loop),
                     on_clip_ready=on_clip_done
                 )
@@ -465,7 +468,7 @@ async def job_worker(app: Application):
 
                 # Send summary
                 mode_str = "Streamer (Facecam Top)" if res["is_streamer"] else "Clean Centered (Solid BG)"
-                subs_str = "Enabled (Active Commentary)" if res.get("is_commentary") else "Disabled (No-Commentary)"
+                subs_str = "Enabled" if job.get("subs", DEFAULT_SUBS) and res.get("is_commentary") else "Disabled (No-subs mode)"
                 summary = (
                     f"🎉 <b>All {len(res['clips'])} Clips Completed!</b>\n\n"
                     f"⏱️ <b>Actual Time:</b> ~{actual_min} min (Estimate was {job['est_range']})\n"

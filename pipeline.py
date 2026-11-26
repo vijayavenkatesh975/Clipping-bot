@@ -21,7 +21,7 @@ import requests
 
 from config import (
     BASE_DIR, CACHE_DIR, WORK_DIR, MODELS_DIR,
-    PY_BIN, MAX_JOB_MINUTES, DEFAULT_CLIPS, DEFAULT_LAYOUT, DEFAULT_FIT, DEFAULT_LENGTH,
+    PY_BIN, MAX_JOB_MINUTES, DEFAULT_CLIPS, DEFAULT_LAYOUT, DEFAULT_FIT, DEFAULT_LENGTH, DEFAULT_SUBS,
     WHISPER_MODEL, OLLAMA_MODEL, OLLAMA_URL, YTDLP_COOKIES_BROWSER, YTDLP_COOKIES_FILE
 )
 from captions import make_ass, calculate_wpm
@@ -502,7 +502,8 @@ def download_winning_segments(url_or_path, winning_clips, work_dir):
 
 # ---------------------------------------------------------------- Full Pipeline Orchestrator
 def run_pipeline(url_or_path, clips_count=5, layout="top", fit="blur",
-                 length="20-55", manual_facecam=None, on_progress=None, on_clip_ready=None):
+                 length="20-55", manual_facecam=None, enable_subs=DEFAULT_SUBS,
+                 on_progress=None, on_clip_ready=None):
     """
     Executes the candidate-first clipping pipeline.
     `on_progress(stage_name, percent, eta_str)`: Callback for live progress UI.
@@ -594,9 +595,9 @@ def run_pipeline(url_or_path, clips_count=5, layout="top", fit="blur",
         out_clip = os.path.join(vid_work, f"clip_{idx:02d}.mp4")
         ass_path = os.path.join(vid_work, f"clip_{idx:02d}.ass")
 
-        # Subtitles ONLY for commentary videos, never for no-commentary
+        # Subtitles: disabled by default per user instruction ("no subs needed for the video")
         has_subs = False
-        if words and is_commentary:
+        if enable_subs and words and is_commentary:
             has_subs = make_ass(words, c["start"], c["end"], ass_path, layout=final_layout, is_commentary=is_commentary)
 
         # Render clip
