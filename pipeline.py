@@ -22,7 +22,7 @@ import requests
 from config import (
     BASE_DIR, CACHE_DIR, WORK_DIR, MODELS_DIR,
     PY_BIN, MAX_JOB_MINUTES, DEFAULT_CLIPS, DEFAULT_LAYOUT, DEFAULT_FIT, DEFAULT_LENGTH, DEFAULT_SUBS,
-    WHISPER_MODEL, OLLAMA_MODEL, OLLAMA_URL, YTDLP_COOKIES_BROWSER, YTDLP_COOKIES_FILE
+    WHISPER_MODEL, OLLAMA_MODEL, OLLAMA_URL, YTDLP_COOKIES_BROWSER, get_cookies_file
 )
 from captions import make_ass, calculate_wpm
 from layouts import render_clip
@@ -40,20 +40,35 @@ def get_video_id(url_or_path):
 
 
 # ---------------------------------------------------------------- yt-dlp Utilities
-def get_ytdlp_base_cmd(client_profile="android,ios,mweb"):
+YTDLP_CLIENT_PROFILES = [
+    None,                  # Default yt-dlp stack (uses bgutil PO Token + Deno JS runtime)
+    "default,mweb",        # Mobile web + default
+    "android_vr,mweb",     # Android VR + Mobile web
+    "tv,android_vr",       # Smart TV + Android VR
+    "ios,android,mweb"     # Legacy iOS/Android stack
+]
+
+
+def get_ytdlp_base_cmd(client_profile=None):
     """
-    Returns base yt-dlp command with mobile client spoofing and cookie configuration.
-    Bypasses YouTube datacenter bot checks / sign-in prompts on GitHub Actions and cloud runners.
+    Returns base yt-dlp command with dynamic cookies, IPv4 enforcement on cloud runners,
+    and optional player_client override.
     """
     cmd = [
         PY_BIN, "-m", "yt_dlp",
-        "--extractor-args", f"youtube:player_client={client_profile}",
         "--no-check-certificates"
     ]
+    if os.environ.get("GITHUB_ACTIONS") == "true" or os.name != "nt":
+        cmd.append("--force-ipv4")
+
+    if client_profile:
+        cmd += ["--extractor-args", f"youtube:player_client={client_profile}"]
+
+    cookies_file = get_cookies_file()
     if YTDLP_COOKIES_BROWSER:
         cmd += ["--cookies-from-browser", YTDLP_COOKIES_BROWSER]
-    elif YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
-        cmd += ["--cookies", YTDLP_COOKIES_FILE]
+    elif cookies_file:
+        cmd += ["--cookies", cookies_file]
     return cmd
 
 
@@ -84,30 +99,35 @@ def probe_video(url_or_path):
             "video_id": get_video_id(url_or_path)
         }
 
-    client_profiles = [
-        "android,ios,mweb",
-        "ios,web_creator,mweb",
-        "android,web"
-    ]
-
     print(f"[probe] Probing metadata for {url_or_path}...")
     proc = None
-    for attempt, profile in enumerate(client_profiles, 1):
+    last_err = ""
+    for attempt, profile in enumerate(YTDLP_CLIENT_PROFILES, 1):
         cmd = get_ytdlp_base_cmd(profile) + [
             "-J", "--no-playlist",
-            "--retries", "3",
+            "--retries", "2",
             "--retry-sleep", "exp=1:2",
             url_or_path
         ]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
         if proc.returncode == 0 and proc.stdout.strip().startswith("{"):
             break
-        print(f"[probe] Probe attempt {attempt} with profile ({profile}) failed, retrying...")
-        time.sleep(attempt * 2)
+        last_err = proc.stderr or ""
+        print(f"[probe] Probe attempt {attempt} ({profile or 'default'}) failed, trying next profile...")
+        time.sleep(1.5)
 
-    if proc is None or proc.returncode != 0:
-        err = proc.stderr if proc else "Unknown error"
-        raise RuntimeError(f"Failed to probe video URL:\n{err[-350:]}")
+    if proc is None or proc.returncode != 0 or not proc.stdout.strip().startswith("{"):
+        if "not a bot" in last_err.lower() or "sign in to confirm" in last_err.lower():
+            raise RuntimeError(
+                "YouTube blocked this cloud server IP ('Sign in to confirm you're not a bot').\n\n"
+                "How to fix in 20 seconds:\n"
+                "1. Export a YouTube cookies.txt file (use Chrome extension 'Get cookies.txt LOCALLY' on a spare YouTube account).\n"
+                "2. Send the cookies.txt file right here in this chat (or add it as GitHub Secret YTDLP_COOKIES)!"
+            )
+        # Keep clean lines without cutting mid-word
+        err_lines = [ln for ln in last_err.strip().splitlines() if ln.strip()]
+        clean_tail = "\n".join(err_lines[-4:])[:500]
+        raise RuntimeError(f"Failed to probe video URL:\n{clean_tail}")
 
     info = json.loads(proc.stdout)
     is_live = bool(info.get("is_live", False) or info.get("was_live", False) and info.get("duration") is None)
@@ -141,30 +161,29 @@ def download_audio(url_or_path, vid_dir):
         return wav_path
 
     out_tmpl = os.path.join(vid_dir, "audio.%(ext)s")
-    cmd = get_ytdlp_base_cmd("android,ios,mweb") + [
-        "-f", "bestaudio[abr<=64]/worstaudio/bestaudio/best[height<=360]/best",
-        "-N", "8",
-        "--retries", "10",
-        "--fragment-retries", "10",
-        "--retry-sleep", "exp=1:5",
-        "--no-part",
-        "-o", out_tmpl,
-        url_or_path
-    ]
-
     print("[audio] Downloading low-bitrate audio track...")
     t0 = time.time()
     success = False
-    for attempt in range(1, 4):
+    for attempt, profile in enumerate(YTDLP_CLIENT_PROFILES, 1):
+        cmd = get_ytdlp_base_cmd(profile) + [
+            "-f", "bestaudio[abr<=64]/worstaudio/bestaudio/best[height<=360]/best",
+            "-N", "8",
+            "--retries", "6",
+            "--fragment-retries", "6",
+            "--retry-sleep", "exp=1:4",
+            "--no-part",
+            "-o", out_tmpl,
+            url_or_path
+        ]
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
         if res.returncode == 0:
             success = True
             break
-        print(f"[audio] Download attempt {attempt} failed, retrying in {attempt * 3}s...\n{res.stderr[-200:]}")
-        time.sleep(attempt * 3)
+        print(f"[audio] Download attempt {attempt} ({profile or 'default'}) failed, trying next profile...\n{res.stderr[-200:]}")
+        time.sleep(2)
 
     if not success:
-        raise RuntimeError("Failed to download audio from video URL after 3 attempts.")
+        raise RuntimeError("Failed to download audio from video URL after trying all profiles.")
     t_down = max(0.5, time.time() - t0)
 
     # Convert to 16kHz mono WAV for Whisper & loudness analysis
@@ -470,23 +489,22 @@ def download_winning_segments(url_or_path, winning_clips, work_dir):
         eh = int(e // 3600); em = int((e % 3600) // 60); es = int(e % 60)
         sec_str = f"*{sh:02d}:{sm:02d}:{ss:02d}-{eh:02d}:{em:02d}:{es:02d}"
 
-        cmd = get_ytdlp_base_cmd("android,ios,mweb") + [
-            "-f", "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
-            "--merge-output-format", "mp4",
-            "--no-part",
-            "--download-sections", sec_str,
-            "--force-keyframes-at-cuts",
-            "--retries", "10",
-            "--fragment-retries", "10",
-            "--retry-sleep", "exp=1:5",
-            "-N", "4",
-            "-o", out_raw,
-            url_or_path
-        ]
-
         success = False
-        for attempt in range(1, 4):
-            print(f"[segment] Downloading winning clip #{idx} ({sec_str}) [attempt {attempt}/3]...")
+        for attempt, profile in enumerate(YTDLP_CLIENT_PROFILES, 1):
+            cmd = get_ytdlp_base_cmd(profile) + [
+                "-f", "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
+                "--merge-output-format", "mp4",
+                "--no-part",
+                "--download-sections", sec_str,
+                "--force-keyframes-at-cuts",
+                "--retries", "6",
+                "--fragment-retries", "6",
+                "--retry-sleep", "exp=1:4",
+                "-N", "4",
+                "-o", out_raw,
+                url_or_path
+            ]
+            print(f"[segment] Downloading winning clip #{idx} ({sec_str}) [attempt {attempt}/{len(YTDLP_CLIENT_PROFILES)}: {profile or 'default'}]...")
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
             if proc.returncode == 0 and os.path.exists(out_raw) and os.path.getsize(out_raw) > 5000:
                 success = True
@@ -494,8 +512,8 @@ def download_winning_segments(url_or_path, winning_clips, work_dir):
                 break
             else:
                 err_snippet = proc.stderr[-200:] if proc.stderr else "Unknown error"
-                print(f"[segment] Clip #{idx} attempt {attempt} failed, retrying in {attempt * 3}s:\n{err_snippet}")
-                time.sleep(attempt * 3)
+                print(f"[segment] Clip #{idx} attempt {attempt} failed, trying next profile:\n{err_snippet}")
+                time.sleep(2)
 
         if not success:
             print(f"[segment] ⚠️ Warning: Failed to download clip #{idx} after 3 attempts. Skipping this clip.")

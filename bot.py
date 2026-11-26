@@ -21,10 +21,11 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
+import config
 from config import (
     TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS, MAX_JOB_MINUTES,
     DEFAULT_CLIPS, DEFAULT_LAYOUT, DEFAULT_FIT, DEFAULT_LENGTH, DEFAULT_SUBS,
-    is_user_allowed, TELEGRAM_API_BASE, WORK_DIR
+    is_user_allowed, TELEGRAM_API_BASE, WORK_DIR, CACHE_DIR, get_cookies_file
 )
 from pipeline import probe_video, run_pipeline, re_render_clips
 from estimator import estimate_pipeline_time
@@ -200,6 +201,65 @@ async def subs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📝 Enable Subtitles (Commentary only)", callback_data="set_subs_on")]
         ]
         await update.message.reply_text(f"Subtitles are currently: <b>{current_status}</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+
+async def cookies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_user_allowed(user_id): return
+    active_cookie = get_cookies_file()
+    status_txt = f"Active (<code>{os.path.basename(active_cookie)}</code>)" if active_cookie else "Not set"
+    msg = (
+        f"🍪 <b>YouTube Cookies Status:</b> {status_txt}\n\n"
+        f"If YouTube flags cloud runner IPs with <i>'Sign in to confirm you're not a bot'</i>:\n"
+        f"1. Use a <b>spare/burner</b> Google account (recommended).\n"
+        f"2. Install Chrome extension <b>'Get cookies.txt LOCALLY'</b> on youtube.com.\n"
+        f"3. Export <code>cookies.txt</code> and <b>send/drop that file directly in this Telegram chat!</b>\n\n"
+        f"<i>Tip: To make it permanent across 24/7 cloud restarts, paste the file contents into GitHub Repo Secrets as <code>YTDLP_COOKIES</code>.</i>"
+    )
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_user_allowed(user_id):
+        await update.message.reply_text("⛔ Access denied.")
+        return
+
+    doc = update.message.document
+    if not doc:
+        return
+
+    fname = (doc.file_name or "").lower()
+    if fname.endswith(".txt") or "cookie" in fname:
+        if doc.file_size > 2 * 1024 * 1024:
+            await update.message.reply_text("⚠️ Cookie file is unexpectedly large (>2MB).")
+            return
+        status_msg = await update.message.reply_text("🍪 Installing YouTube cookies & testing connection...")
+        try:
+            tg_file = await doc.get_file()
+            cookie_dest = os.path.join(CACHE_DIR, "cookies.txt")
+            await tg_file.download_to_drive(cookie_dest)
+            with open(cookie_dest, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            if "youtube.com" not in content and "google.com" not in content:
+                await status_msg.edit_text("⚠️ That `.txt` file does not appear to contain YouTube cookies. Please export from youtube.com using 'Get cookies.txt LOCALLY'.")
+                return
+
+            config.YTDLP_COOKIES_FILE = cookie_dest
+            meta = await asyncio.to_thread(probe_video, "https://www.youtube.com/watch?v=jNQXAC9IVRw")
+            await status_msg.edit_text(
+                f"✅ <b>Cookies Installed & Verified!</b>\n"
+                f"Test video probed cleanly: <i>{html.escape(meta['title'])}</i>\n\n"
+                f"Send your YouTube link now! 🔥",
+                parse_mode="HTML"
+            )
+        except Exception as ex:
+            err_str = html.escape(str(ex))[:500]
+            await status_msg.edit_text(f"❌ Cookies saved, but test probe failed:\n<code>{err_str}</code>", parse_mode="HTML")
+        return
+
+    # Otherwise treat as video document
+    await handle_url_or_video(update, context)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -691,18 +751,51 @@ def main():
     app.add_handler(CommandHandler("fit", fit_command))
     app.add_handler(CommandHandler("length", length_command))
     app.add_handler(CommandHandler("subs", subs_command))
+    app.add_handler(CommandHandler("cookies", cookies_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
 
     # Callbacks and Messages
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_or_video))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_url_or_video))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_url_or_video))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document_upload))
     app.add_error_handler(error_handler)
 
-    # Background worker
+    # Background worker & startup probe
+    async def check_cloud_youtube(application: Application):
+        await asyncio.sleep(2)
+        try:
+            meta = await asyncio.to_thread(probe_video, "https://www.youtube.com/watch?v=jNQXAC9IVRw")
+            print(f"[startup] YouTube cloud extraction check PASSED: {meta.get('title')}")
+            if ALLOWED_USER_IDS and os.environ.get("GITHUB_EVENT_NAME") in ("push", "workflow_dispatch"):
+                try:
+                    await application.bot.send_message(
+                        ALLOWED_USER_IDS[0],
+                        "✅ <b>24/7 Cloud Bot Online & YouTube Verified!</b>\n"
+                        "PO Token server + Deno JS engine active. Send any YouTube link now! 🚀",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+        except Exception as ex:
+            print(f"[startup] YouTube cloud extraction check WARNING: {ex}")
+            if ALLOWED_USER_IDS:
+                try:
+                    await application.bot.send_message(
+                        ALLOWED_USER_IDS[0],
+                        "⚠️ <b>Cloud Bot Startup Notice:</b>\n"
+                        "YouTube is flagging this GitHub Actions runner IP.\n"
+                        "To fix in 20s, export YouTube <code>cookies.txt</code> (from a spare account) and drop it right here in this chat, or add it as GitHub Secret <code>YTDLP_COOKIES</code>.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
     async def on_startup(application: Application):
         asyncio.create_task(job_worker(application))
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            asyncio.create_task(check_cloud_youtube(application))
 
     app.post_init = on_startup
     app.run_polling(bootstrap_retries=-1, timeout=30)

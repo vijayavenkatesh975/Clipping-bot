@@ -75,6 +75,16 @@ if YTDLP_COOKIES_TEXT and not (YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKI
 TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "").strip()
 
 
+def get_cookies_file() -> str:
+    """Returns path to an active cookies.txt file if configured or uploaded via Telegram."""
+    if YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE) and os.path.getsize(YTDLP_COOKIES_FILE) > 10:
+        return YTDLP_COOKIES_FILE
+    default_cookie_path = os.path.join(CACHE_DIR, "cookies.txt")
+    if os.path.exists(default_cookie_path) and os.path.getsize(default_cookie_path) > 10:
+        return default_cookie_path
+    return ""
+
+
 def is_user_allowed(user_id: int) -> bool:
     """Return True if user_id is permitted. If ALLOWED_USER_IDS is empty, allow for setup."""
     if not ALLOWED_USER_IDS:
