@@ -39,6 +39,24 @@ def get_video_id(url_or_path):
     return hashlib.md5(str(url_or_path).encode("utf-8")).hexdigest()[:12]
 
 
+# ---------------------------------------------------------------- yt-dlp Utilities
+def get_ytdlp_base_cmd(client_profile="android,ios,mweb"):
+    """
+    Returns base yt-dlp command with mobile client spoofing and cookie configuration.
+    Bypasses YouTube datacenter bot checks / sign-in prompts on GitHub Actions and cloud runners.
+    """
+    cmd = [
+        PY_BIN, "-m", "yt_dlp",
+        "--extractor-args", f"youtube:player_client={client_profile}",
+        "--no-check-certificates"
+    ]
+    if YTDLP_COOKIES_BROWSER:
+        cmd += ["--cookies-from-browser", YTDLP_COOKIES_BROWSER]
+    elif YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
+        cmd += ["--cookies", YTDLP_COOKIES_FILE]
+    return cmd
+
+
 # ---------------------------------------------------------------- Step 1: Probe
 def probe_video(url_or_path):
     """
@@ -66,32 +84,30 @@ def probe_video(url_or_path):
             "video_id": get_video_id(url_or_path)
         }
 
-    cmd = [
-        PY_BIN, "-m", "yt_dlp",
-        "-J", "--no-playlist",
-        "--retries", "5",
-        "--retry-sleep", "exp=1:3",
-        url_or_path
+    client_profiles = [
+        "android,ios,mweb",
+        "ios,web_creator,mweb",
+        "android,web"
     ]
-    if YTDLP_COOKIES_BROWSER:
-        cmd += ["--cookies-from-browser", YTDLP_COOKIES_BROWSER]
-    elif YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
-        cmd += ["--cookies", YTDLP_COOKIES_FILE]
 
     print(f"[probe] Probing metadata for {url_or_path}...")
     proc = None
-    for attempt in range(1, 4):
+    for attempt, profile in enumerate(client_profiles, 1):
+        cmd = get_ytdlp_base_cmd(profile) + [
+            "-J", "--no-playlist",
+            "--retries", "3",
+            "--retry-sleep", "exp=1:2",
+            url_or_path
+        ]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
-        if proc.returncode == 0:
+        if proc.returncode == 0 and proc.stdout.strip().startswith("{"):
             break
-        print(f"[probe] Probe attempt {attempt} failed, retrying in {attempt * 2}s...")
+        print(f"[probe] Probe attempt {attempt} with profile ({profile}) failed, retrying...")
         time.sleep(attempt * 2)
 
     if proc is None or proc.returncode != 0:
         err = proc.stderr if proc else "Unknown error"
-        if "confirm you're not a bot" in err.lower():
-            raise RuntimeError("YouTube bot check triggered. Please set YTDLP_COOKIES_BROWSER in .env")
-        raise RuntimeError(f"Failed to probe video URL:\n{err[-300:]}")
+        raise RuntimeError(f"Failed to probe video URL:\n{err[-350:]}")
 
     info = json.loads(proc.stdout)
     is_live = bool(info.get("is_live", False) or info.get("was_live", False) and info.get("duration") is None)
@@ -125,9 +141,8 @@ def download_audio(url_or_path, vid_dir):
         return wav_path
 
     out_tmpl = os.path.join(vid_dir, "audio.%(ext)s")
-    cmd = [
-        PY_BIN, "-m", "yt_dlp",
-        "-f", "bestaudio[abr<=64]/worstaudio/bestaudio",
+    cmd = get_ytdlp_base_cmd("android,ios,mweb") + [
+        "-f", "bestaudio[abr<=64]/worstaudio/bestaudio/best[height<=360]/best",
         "-N", "8",
         "--retries", "10",
         "--fragment-retries", "10",
@@ -136,10 +151,6 @@ def download_audio(url_or_path, vid_dir):
         "-o", out_tmpl,
         url_or_path
     ]
-    if YTDLP_COOKIES_BROWSER:
-        cmd += ["--cookies-from-browser", YTDLP_COOKIES_BROWSER]
-    elif YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
-        cmd += ["--cookies", YTDLP_COOKIES_FILE]
 
     print("[audio] Downloading low-bitrate audio track...")
     t0 = time.time()
@@ -459,8 +470,7 @@ def download_winning_segments(url_or_path, winning_clips, work_dir):
         eh = int(e // 3600); em = int((e % 3600) // 60); es = int(e % 60)
         sec_str = f"*{sh:02d}:{sm:02d}:{ss:02d}-{eh:02d}:{em:02d}:{es:02d}"
 
-        cmd = [
-            PY_BIN, "-m", "yt_dlp",
+        cmd = get_ytdlp_base_cmd("android,ios,mweb") + [
             "-f", "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
             "--merge-output-format", "mp4",
             "--no-part",
@@ -473,10 +483,6 @@ def download_winning_segments(url_or_path, winning_clips, work_dir):
             "-o", out_raw,
             url_or_path
         ]
-        if YTDLP_COOKIES_BROWSER:
-            cmd += ["--cookies-from-browser", YTDLP_COOKIES_BROWSER]
-        elif YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
-            cmd += ["--cookies", YTDLP_COOKIES_FILE]
 
         success = False
         for attempt in range(1, 4):

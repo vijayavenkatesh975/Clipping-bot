@@ -33,10 +33,12 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install System Dependencies (FFmpeg)
+      - name: Install System Dependencies (FFmpeg & Deno JS Runtime)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libgl1
+          sudo apt-get install -y ffmpeg libgl1 curl unzip
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
 
       - name: Install Python Dependencies
         run: |
@@ -55,6 +57,7 @@ jobs:
           DEFAULT_FIT: 'pad'
           DEFAULT_LENGTH: '20-45'
           DEFAULT_SUBS: 'false'
+          YTDLP_COOKIES_TEXT: ${{ secrets.YTDLP_COOKIES || secrets.YTDLP_COOKIES_TEXT || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "=========================================================="

@@ -62,6 +62,16 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 YTDLP_COOKIES_BROWSER = os.getenv("YTDLP_COOKIES_BROWSER", "").strip()
 YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+YTDLP_COOKIES_TEXT = os.getenv("YTDLP_COOKIES_TEXT", "").strip()
+
+if YTDLP_COOKIES_TEXT and not (YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE)):
+    auto_cookies = os.path.join(CACHE_DIR, "cookies.txt")
+    try:
+        with open(auto_cookies, "w", encoding="utf-8") as f:
+            f.write(YTDLP_COOKIES_TEXT)
+        YTDLP_COOKIES_FILE = auto_cookies
+    except Exception as ex:
+        print(f"[config] Failed to write auto cookies: {ex}")
 TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "").strip()
 
 
